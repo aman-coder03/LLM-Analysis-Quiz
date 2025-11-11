@@ -88,7 +88,7 @@ def extract_quiz_json(html: str) -> Optional[dict]:
     return None
 
 def extract_submit_url(text: str) -> Optional[str]:
-    m = re.search(r"https?://[^\s\"']+/submit", text)
+    m = re.search(r"https?://[^\s\"']*(submit[^\"'\s<]*)", text, re.I)
     return m.group(0) if m else None
 
 def extract_download_url(text: str) -> Optional[str]:
