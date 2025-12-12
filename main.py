@@ -56,7 +56,17 @@ class SolveContext:
 
 async def fetch_rendered_html(url: str) -> str:
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS)
+        browser = await p.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--single-process",
+                "--disable-gpu",
+                "--proxy-server=http://1.1.1.1"
+            ]
+        )
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
         await page.goto(url, wait_until="networkidle", timeout=int(REQUEST_TIMEOUT * 1000))
@@ -67,11 +77,26 @@ async def fetch_rendered_html(url: str) -> str:
 
 
 
+
 async def download_asset(url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-        r = await client.get(url, headers=headers)
-        r.raise_for_status()
-        return r.content
+    transport = httpx.AsyncHTTPTransport(retries=3)
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, transport=transport) as client:
+        try:
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            return r.content
+
+        except httpx.TransportError:
+            # DNS fallback using Cloudflare proxy
+            async with httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT,
+                transport=transport,
+                proxies={"all": "http://1.1.1.1"}
+            ) as client2:
+                r = await client2.get(url, headers=headers)
+                r.raise_for_status()
+                return r.content
 
 
 
@@ -219,4 +244,5 @@ async def healthz():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT")))
+
