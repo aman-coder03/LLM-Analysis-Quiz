@@ -59,7 +59,10 @@ async def fetch_rendered_html(url: str) -> str:
         browser = await p.chromium.launch(
             headless=HEADLESS,
             args=[
-                "--proxy-server=http://1.1.1.1"  # Forces Cloudflare DNS inside Chromium
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--proxy-server=http://1.1.1.1"   # Force DNS resolution through Cloudflare
             ]
         )
         context = await browser.new_context(accept_downloads=True)
@@ -74,26 +77,26 @@ async def fetch_rendered_html(url: str) -> str:
         return html
 
 
+
 async def download_asset(url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
     transport = httpx.AsyncHTTPTransport(retries=3)
-    async with httpx.AsyncClient(
-        timeout=REQUEST_TIMEOUT,
-        transport=transport
-    ) as client:
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, transport=transport) as client:
         try:
             r = await client.get(url, headers=headers)
             r.raise_for_status()
             return r.content
-        except httpx.ConnectError:
-            # Fallback: Force alternate DNS resolver
-            client = httpx.AsyncClient(
+        except httpx.TransportError:
+            # Fallback DNS resolution through Cloudflare proxy
+            async with httpx.AsyncClient(
                 timeout=REQUEST_TIMEOUT,
                 transport=transport,
                 proxies={"all": "http://1.1.1.1"}
-            )
-            r = await client.get(url, headers=headers)
-            r.raise_for_status()
-            return r.content
+            ) as client2:
+                r = await client2.get(url, headers=headers)
+                r.raise_for_status()
+                return r.content
+
 
 
 def extract_quiz_json(html: str) -> Optional[dict]:
