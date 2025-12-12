@@ -63,17 +63,23 @@ async def fetch_rendered_html(url: str) -> str:
                 "--disable-setuid-sandbox",
                 "--disable-dev-shm-usage",
                 "--single-process",
-                "--disable-gpu",
-                "--proxy-server=http://1.1.1.1"
+                "--disable-gpu"
             ]
         )
         context = await browser.new_context(accept_downloads=True)
+
         page = await context.new_page()
-        await page.goto(url, wait_until="networkidle", timeout=int(REQUEST_TIMEOUT * 1000))
-        await page.wait_for_timeout(500)
+
+        try:
+            await page.goto(url, wait_until="networkidle", timeout=int(REQUEST_TIMEOUT * 1000))
+        except Exception as e:
+            logger.error(f"Playwright navigation error: {e}")
+            raise
+
         html = await page.content()
         await browser.close()
         return html
+
 
 
 
