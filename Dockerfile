@@ -38,7 +38,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium ONLY — DO NOT use --with-deps
+# IMPORTANT: Install Chromium ONLY (NO --with-deps)
 RUN playwright install chromium
 
 COPY . .
