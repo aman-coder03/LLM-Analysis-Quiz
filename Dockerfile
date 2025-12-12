@@ -1,10 +1,9 @@
-# Dockerfile
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install system dependencies for Playwright Chromium
+# Install system deps for Playwright Chromium
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libasound2 \
@@ -39,13 +38,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright Chromium with dependencies
-RUN playwright install --with-deps chromium
+# Install Chromium ONLY — DO NOT use --with-deps
+RUN playwright install chromium
 
 COPY . .
 
-# Railway uses a dynamic port. EXPOSE is optional.
 EXPOSE 8000
 
-# Use $PORT provided by Railway
 CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
