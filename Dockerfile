@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+# FIX: Add DNS servers so that Playwright/httpx can resolve domains
+RUN printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
@@ -44,4 +47,5 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use Railway dynamic port
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
