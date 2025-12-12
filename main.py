@@ -1,3 +1,4 @@
+# main.py
 import asyncio
 import base64
 import io
@@ -8,6 +9,7 @@ import re
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple, Dict, Any
+from urllib.parse import urlparse
 
 import httpx
 import pandas as pd
@@ -54,7 +56,45 @@ class SolveContext:
     start_ts: float
     deadline_s: float
 
+# ---------------------------
+# DNS-over-HTTPS resolver
+# ---------------------------
+CLOUDFLARE_DOH = "https://cloudflare-dns.com/dns-query"
+
+async def resolve_domain(hostname: str) -> Optional[str]:
+    """Resolve hostname to an IP using Cloudflare DNS-over-HTTPS (DoH)."""
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, headers={"accept": "application/dns-json"}) as client:
+            r = await client.get(CLOUDFLARE_DOH, params={"name": hostname, "type": "A"})
+            r.raise_for_status()
+            j = r.json()
+            answers = j.get("Answer") or []
+            # pick first A record
+            for ans in answers:
+                data = ans.get("data")
+                if data and re.match(r"^\d+\.\d+\.\d+\.\d+$", str(data)):
+                    return data
+    except Exception as e:
+        logger.debug(f"DoH resolution failed for {hostname}: {e}")
+    return None
+
+# ---------------------------
+# Playwright fetch (uses DoH-resolved IP)
+# ---------------------------
 async def fetch_rendered_html(url: str) -> str:
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise RuntimeError("Invalid URL: no hostname")
+
+    ip = await resolve_domain(hostname)
+    # If DoH did not return an IP, fall back to direct hostname navigation (may fail on Railway)
+    nav_url = url
+    use_ip = False
+    if ip:
+        use_ip = True
+        nav_url = url.replace(hostname, ip)
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=HEADLESS,
@@ -64,49 +104,65 @@ async def fetch_rendered_html(url: str) -> str:
                 "--disable-dev-shm-usage",
                 "--single-process",
                 "--disable-gpu"
-            ]
+            ],
         )
-        context = await browser.new_context(accept_downloads=True)
+
+        # Ignore HTTPS errors so navigation to IP with Host header works
+        context = await browser.new_context(accept_downloads=True, ignore_https_errors=True)
+
+        # If we will navigate to an IP, set Host header so server gets correct host
+        if use_ip:
+            await context.set_extra_http_headers({"Host": hostname})
 
         page = await context.new_page()
 
         try:
-            await page.goto(url, wait_until="networkidle", timeout=int(REQUEST_TIMEOUT * 1000))
+            await page.goto(nav_url, wait_until="networkidle", timeout=int(REQUEST_TIMEOUT * 1000))
+            await page.wait_for_timeout(500)
+            html = await page.content()
         except Exception as e:
-            logger.error(f"Playwright navigation error: {e}")
+            logger.error(f"Playwright navigation error for {url}: {e}")
+            await browser.close()
             raise
-
-        html = await page.content()
         await browser.close()
         return html
 
-
-
-
-
+# ---------------------------
+# HTTP download with DoH fallback
+# ---------------------------
 async def download_asset(url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
-    transport = httpx.AsyncHTTPTransport(retries=3)
-
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, transport=transport) as client:
-        try:
+    # Try normal request first
+    try:
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
             r = await client.get(url, headers=headers)
             r.raise_for_status()
             return r.content
+    except Exception as e:
+        logger.debug(f"Direct download failed for {url}: {e}")
 
-        except httpx.TransportError:
-            # DNS fallback using Cloudflare proxy
-            async with httpx.AsyncClient(
-                timeout=REQUEST_TIMEOUT,
-                transport=transport,
-                proxies={"all": "http://1.1.1.1"}
-            ) as client2:
-                r = await client2.get(url, headers=headers)
-                r.raise_for_status()
-                return r.content
+    # DNS-over-HTTPS fallback
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise RuntimeError("Invalid URL for download")
 
+    ip = await resolve_domain(hostname)
+    if not ip:
+        raise RuntimeError(f"DNS resolution failed for {hostname}")
 
+    # Replace hostname with IP and set Host header
+    url_ip = url.replace(hostname, ip)
+    hdrs = headers.copy() if headers else {}
+    hdrs.update({"Host": hostname})
 
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=False) as client:
+        r = await client.get(url_ip, headers=hdrs)
+        r.raise_for_status()
+        return r.content
 
+# ---------------------------
+# Quiz parsing helpers
+# ---------------------------
 def extract_quiz_json(html: str) -> Optional[dict]:
     m = re.search(r"atob\s*\(\s*`([^`]*)`", html, re.DOTALL)
     if m:
@@ -157,6 +213,9 @@ async def submit_answer(submit_url: str, payload: Dict[str, Any]) -> Dict[str, A
         except:
             return {"raw": r.text}
 
+# ---------------------------
+# Solver logic
+# ---------------------------
 async def solve_once(email: str, secret: str, quiz_url: str) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     html = await fetch_rendered_html(quiz_url)
     quiz_json = extract_quiz_json(html)
@@ -251,4 +310,3 @@ async def healthz():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT")))
-
