@@ -56,20 +56,45 @@ class SolveContext:
 
 async def fetch_rendered_html(url: str) -> str:
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=HEADLESS)
+        browser = await p.chromium.launch(
+            headless=HEADLESS,
+            args=[
+                "--proxy-server=http://1.1.1.1"  # Forces Cloudflare DNS inside Chromium
+            ]
+        )
         context = await browser.new_context(accept_downloads=True)
         page = await context.new_page()
+
         await page.goto(url, wait_until="networkidle", timeout=int(REQUEST_TIMEOUT * 1000))
         await page.wait_for_timeout(500)
+
         html = await page.content()
+
         await browser.close()
         return html
 
+
 async def download_asset(url: str, headers: Optional[Dict[str, str]] = None) -> bytes:
-    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-        r = await client.get(url, headers=headers)
-        r.raise_for_status()
-        return r.content
+    transport = httpx.AsyncHTTPTransport(retries=3)
+    async with httpx.AsyncClient(
+        timeout=REQUEST_TIMEOUT,
+        transport=transport
+    ) as client:
+        try:
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            return r.content
+        except httpx.ConnectError:
+            # Fallback: Force alternate DNS resolver
+            client = httpx.AsyncClient(
+                timeout=REQUEST_TIMEOUT,
+                transport=transport,
+                proxies={"all": "http://1.1.1.1"}
+            )
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            return r.content
+
 
 def extract_quiz_json(html: str) -> Optional[dict]:
     m = re.search(r"atob\s*\(\s*`([^`]*)`", html, re.DOTALL)
